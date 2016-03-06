@@ -55,6 +55,12 @@ machine(L1Cache, "MI Example L1 Cache")
 
     IS, AccessPermission:Busy, desc="Issued request for LOAD/IFETCH";
     IM, AccessPermission:Busy, desc="Issued request for STORE/ATOMIC";
+    //666
+    //Base state
+    S, AccessPermission:Read_Only, desc="a L1 cache entry Shared";
+    //Transient states
+    SM, AccessPermission:Busy, desc="L1 idle, issed GETS, have not seen response yet";
+    MS, AccessPermission:Busy, desc="fwdGETS received, sent PUTX";
   }
 
   // EVENTS
@@ -266,6 +272,17 @@ machine(L1Cache, "MI Example L1 Cache")
 
   // ACTIONS
 
+//666
+  action(msi_issueFetchToMemory, "msi", desc="fetch data from memory") {
+    enqueue(requestNetwork_out, RequestMsg, issue_latency) {
+        out_msg.Addr := address;
+        out_msg.Type := CoherenceRequestType:GETS;
+        out_msg.Requestor := machineID;
+        out_msg.Destination.add(map_Address_to_Directory(address));
+        out_msg.MessageSize := MessageSizeType:Control;
+      }
+  }
+//666
   action(a_issueRequest, "a", desc="Issue a request") {
     enqueue(requestNetwork_out, RequestMsg, issue_latency) {
     out_msg.Addr := address;
@@ -346,7 +363,7 @@ machine(L1Cache, "MI Example L1 Cache")
       ++cacheMemory.demand_misses;
   }
 
-  action(p_profileHit, "ph", desc="Profile cache miss") {
+  action(p_profileHit, "ph", desc="Profile cache hit") {
       ++cacheMemory.demand_hits;
   }
 
@@ -414,7 +431,7 @@ machine(L1Cache, "MI Example L1 Cache")
     // do nothing
   }
 
-  // TRANSITIONS
+// TRANSITIONS
 
   transition({IS, IM, MI, II, MII}, {Load, Ifetch, Store, Replacement}) {
     z_stall;
@@ -451,22 +468,23 @@ machine(L1Cache, "MI Example L1 Cache")
     p_profileMiss;
     m_popMandatoryQueue;
   }
-
+//666
   transition(I, {Load, Ifetch}, IS) {
     v_allocateTBE;
     i_allocateL1CacheBlock;
-    a_issueRequest;
+    //a_issueRequest;
+    msi_issueFetchToMemory;
     p_profileMiss;
     m_popMandatoryQueue;
   }
 
-  transition(IS, Data, M) {
+  transition(IS, Data, S) {
     u_writeDataToCache;
     rx_load_hit;
     w_deallocateTBE;
     n_popResponseQueue;
   }
-
+//666
   transition(IM, Data, M) {
     u_writeDataToCache;
     sx_store_hit;
@@ -474,12 +492,13 @@ machine(L1Cache, "MI Example L1 Cache")
     n_popResponseQueue;
   }
 
-  transition(M, Fwd_GETX, I) {
+//666
+  transition(M, Fwd_GETX, S) {
     e_sendData;
     forward_eviction_to_cpu;
     o_popForwardedRequestQueue;
   }
-
+//666
   transition(I, Replacement) {
      h_deallocateL1CacheBlock;
   }
@@ -515,5 +534,25 @@ machine(L1Cache, "MI Example L1 Cache")
   transition(II, Writeback_Nack, I) {
     w_deallocateTBE;
     o_popForwardedRequestQueue;
+  }
+//666
+//from Shared
+  transition(S, Inv, I) {
+    forward_eviction_to_cpu;
+   // fi_sendInvAck;
+   // l_popRequestQueue;
+  }
+
+  transition(S, {Load, Ifetch}) {
+    r_load_hit;
+    p_profileHit;
+    m_popMandatoryQueue;
+  }
+  
+  transition(S, Store, SM) {
+    v_allocateTBE;//not sure
+    //c_issueUPGRADE;
+    //uu_profileDataMiss;
+    //k_popMandatoryQueue;
   }
 }
