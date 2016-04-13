@@ -67,7 +67,7 @@ machine(L1Cache, "MI Example L1 Cache")
 
     Data,       desc="Data from network";
     Fwd_GETX,        desc="Forward from network";
-
+    Fwd_GETS,   desc="Forward GETS from network";
     Inv,        desc="Invalidate request from dir";
 
     Replacement,  desc="Replace a block";
@@ -419,7 +419,7 @@ machine(L1Cache, "MI Example L1 Cache")
   transition({IS, IM, MI, II, MII}, {Load, Ifetch, Store, Replacement}) {
     z_stall;
   }
-
+//bullshit
   transition({IS, IM}, {Fwd_GETX, Inv}) {
     z_stall;
   }

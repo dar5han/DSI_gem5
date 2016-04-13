@@ -60,7 +60,14 @@ machine(Directory, "Directory protocol")
     MI, AccessPermission:Busy, desc="Intermediate state M-->I";
     ID, AccessPermission:Busy, desc="Intermediate state for DMA_READ when in I";
     ID_W, AccessPermission:Busy, desc="Intermediate state for DMA_WRITE when in I";
-  }
+//666
+    SM, AccessPermission:Busy, desc="Intermediate state S->M";
+    SMI, AccessPermission:Busy, desc="Intermediate state SMI in S->M";
+    SS, AccessPermission:Busy, desc="Intermediate state S->S";
+    IS, AccessPermission:Busy, desc="Intermediate state I->S";
+    MS, AccessPermission:Busy, desc="Intermediate state M->S";
+//666
+}
 
   // Events
   enumeration(Event, desc="Directory events") {
