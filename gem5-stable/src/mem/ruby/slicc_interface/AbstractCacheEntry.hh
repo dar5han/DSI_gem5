@@ -55,9 +55,15 @@ class AbstractCacheEntry : public AbstractEntry
     // is absolutely necessary and should all be virtual function.
     virtual DataBlock& getDataBlk()
     { panic("getDataBlk() not implemented!"); }
+    
+    void set_selfinvalidatebit();
+    void clear_selfinvalidatebit();
 
+    void incrementSharerCount();
+    void clearSharerCount();
 
     void incrementVerNumber();
+    void clearVerNumber();
     //dsr
 
     Address m_Address; // Address of this block, required by CacheMemory

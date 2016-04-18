@@ -34,6 +34,7 @@ AbstractCacheEntry::AbstractCacheEntry()
     m_Address.setAddress(0);
     m_locked = -1;
     vernumber = 0;
+    selfinvalidate = false;
 }
 
 AbstractCacheEntry::~AbstractCacheEntry()
@@ -51,8 +52,40 @@ AbstractCacheEntry::changePermission(AccessPermission new_perm)
 }
 
 void
+AbstractCacheEntry::set_selfinvalidatebit()
+{
+    AbstractEntry::set_selfinvalidatebit();
+}
+
+void
+AbstractCacheEntry::clear_selfinvalidatebit()
+{
+    AbstractEntry::clear_selfinvalidatebit();
+}
+
+void
 AbstractCacheEntry::incrementVerNumber()
 {
     AbstractEntry::incrementVerNumber();
 //dsr
+}
+
+
+void
+AbstractCacheEntry::clearVerNumber()
+{
+    AbstractEntry::clearVerNumber();
+//dsr
+}
+
+void
+AbstractCacheEntry::clearSharerCount()
+{
+    AbstractEntry::clearSharerCount();
+}
+
+void
+AbstractCacheEntry::incrementSharerCount()
+{
+    AbstractEntry::incrementSharerCount();
 }

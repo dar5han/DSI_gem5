@@ -114,6 +114,8 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
     Exclusive_Unblock, desc="Unblock from L1 requestor";
 
     MEM_Inv, desc="Invalidation from directory";
+    L1_GETX_VN,              desc="a L1D GETX request when tag matches but invalid";
+    L1_GETS_VN,              desc="a L1D GETS request when tag matches but invalid";
   }
 
   // TYPES
@@ -125,6 +127,9 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
     MachineID Exclusive,          desc="Exclusive holder of block";
     DataBlock DataBlk,       desc="data for the block";
     bool Dirty, default="false", desc="data is dirty";
+    bool self_invalidate_flag, desc="set if SI block";//dsr dsi
+    int ver_number, desc="ver number";
+    int sharer_count_ver, desc="sharer count for current ver number";
   }
 
   // TBE fields
@@ -166,6 +171,26 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
     } else {
       return false;
     }
+  }
+
+  bool checkEqual(int a, int b)
+  {
+     if(a == b) {
+         return true;
+     }
+     else{
+         return false;
+     }
+  }
+
+  bool checkGreater(int a, int b)
+  {
+     if(a >= b) {
+         return true;
+     }
+     else{
+         return false;
+     }
   }
 
   void addSharer(Address addr, MachineID requestor, Entry cache_entry) {
@@ -239,17 +264,30 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
   void setAccessPermission(Entry cache_entry, Address addr, State state) {
     if (is_valid(cache_entry)) {
       cache_entry.changePermission(L2Cache_State_to_permission(state));
+      cache_entry.set_selfinvalidatebit();// dsr
     }
+  }
+
+  void updateSharerCount(Entry cache_entry)
+  {
+      if(is_valid(cache_entry))
+      {
+          cache_entry.sharer_count_ver := cache_entry.sharer_count_ver + 1;
+      }
   }
 
   Event L1Cache_request_type_to_event(CoherenceRequestType type, Address addr,
                                       MachineID requestor, Entry cache_entry) {
     if(type == CoherenceRequestType:GETS) {
       return Event:L1_GETS;
+    } else if (type == CoherenceRequestType:GETS_VN) {
+      return Event:L1_GETS_VN;
     } else if(type == CoherenceRequestType:GET_INSTR) {
       return Event:L1_GET_INSTR;
     } else if (type == CoherenceRequestType:GETX) {
       return Event:L1_GETX;
+    } else if (type == CoherenceRequestType:GETX_VN) {
+      return Event:L1_GETX_VN;
     } else if (type == CoherenceRequestType:UPGRADE) {
       if ( is_valid(cache_entry) && cache_entry.Sharers.isElement(requestor) ) {
         return Event:L1_UPGRADE;
@@ -415,6 +453,49 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
     }
   }
 
+  action(dsi_forwardRequestToExclusive, "dsi_frte", desc="Forward request to the exclusive L1") {
+    peek(L1RequestL2Network_in, RequestMsg) {
+      enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
+        assert(is_valid(cache_entry));
+        out_msg.Addr := address;
+        out_msg.Type := in_msg.Type;
+        out_msg.Requestor := in_msg.Requestor;
+        if( checkEqual(in_msg.ver_number,cache_entry.ver_number) )
+        {}
+        else
+        {
+            cache_entry.ver_number := cache_entry.ver_number+1;
+            out_msg.self_invalidate_flag := true;
+            //ver number mismatch
+        }
+        out_msg.ver_number := cache_entry.ver_number;
+        out_msg.Destination.add(cache_entry.Exclusive);
+        out_msg.MessageSize := MessageSizeType:Request_Control;
+      }
+    }
+  }
+
+  action(dsi_forwardRequestToExclusiveOnGets, "dsi_frteOnGets", desc="Forward request to the exclusive L1") {
+    peek(L1RequestL2Network_in, RequestMsg) {
+      enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
+        assert(is_valid(cache_entry));
+        out_msg.Addr := address;
+        out_msg.Type := in_msg.Type;
+        out_msg.Requestor := in_msg.Requestor;
+        if( checkEqual(in_msg.ver_number,cache_entry.ver_number) )
+        {}
+        else
+        {
+            out_msg.self_invalidate_flag := true;
+            updateSharerCount(cache_entry);//error possible
+            //ver number mismatch
+        }
+        out_msg.ver_number := cache_entry.ver_number;
+        out_msg.Destination.add(cache_entry.Exclusive);
+        out_msg.MessageSize := MessageSizeType:Request_Control;
+      }
+    }
+  }
   action(c_exclusiveReplacement, "c", desc="Send data to memory") {
     enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
       assert(is_valid(cache_entry));
@@ -461,7 +542,70 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
         out_msg.Destination.add(in_msg.Requestor);
         out_msg.DataBlk := cache_entry.DataBlk;
         out_msg.MessageSize := MessageSizeType:Response_Data;
+//dsr dsi
+        out_msg.ver_number := 0;
+        out_msg.AckCount := 0 - cache_entry.Sharers.count();
+        if (cache_entry.Sharers.isElement(in_msg.Requestor)) {
+          out_msg.AckCount := out_msg.AckCount + 1;
+        }
+      }
+    }
+  }
 
+
+  action(dsi_sendDataToRequestor, "dsi_sendwithver", desc="Send data from cache to reqeustor with version number") {
+    peek(L1RequestL2Network_in, RequestMsg) {
+      enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+        assert(is_valid(cache_entry));
+        out_msg.Addr := address;
+        out_msg.Type := CoherenceResponseType:DATA;
+        out_msg.Sender := machineID;
+        out_msg.Destination.add(in_msg.Requestor);
+        out_msg.DataBlk := cache_entry.DataBlk;
+        out_msg.MessageSize := MessageSizeType:Response_Data;
+        //dsr dsi
+        if( checkEqual(in_msg.ver_number,cache_entry.ver_number) )
+        {}
+        else
+        {
+            cache_entry.ver_number := cache_entry.ver_number+1;
+            out_msg.self_invalidate_flag := true;
+            //ver number mismatch
+        }
+        out_msg.ver_number := cache_entry.ver_number;
+        out_msg.AckCount := 0 - cache_entry.Sharers.count();
+        if (cache_entry.Sharers.isElement(in_msg.Requestor)) {
+          out_msg.AckCount := out_msg.AckCount + 1;
+        }
+      }
+    }
+  }
+
+  action(dsi_sendDataToRequestorOnRead,"dsi_sendwithveronread", desc="Send data from cache to reqeustor with version number") {
+    peek(L1RequestL2Network_in, RequestMsg) {
+      enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+        assert(is_valid(cache_entry));
+        out_msg.Addr := address;
+        out_msg.Type := CoherenceResponseType:DATA;
+        out_msg.Sender := machineID;
+        out_msg.Destination.add(in_msg.Requestor);
+        out_msg.DataBlk := cache_entry.DataBlk;
+        out_msg.MessageSize := MessageSizeType:Response_Data;
+        //dsr dsi
+        if( checkEqual(in_msg.ver_number,cache_entry.ver_number) )
+        {
+             if(checkGreater(cache_entry.sharer_count_ver,2))
+             {
+                out_msg.self_invalidate_flag := true;
+             }
+        }
+        else
+        {
+            cache_entry.ver_number := cache_entry.ver_number+1;
+            out_msg.self_invalidate_flag := true;
+            //ver number mismatch
+        }
+        out_msg.ver_number := cache_entry.ver_number;
         out_msg.AckCount := 0 - cache_entry.Sharers.count();
         if (cache_entry.Sharers.isElement(in_msg.Requestor)) {
           out_msg.AckCount := out_msg.AckCount + 1;
@@ -489,6 +633,34 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
     }
   }
 
+  action(dsi_sendExclusiveDataToRequestor, "dsi_sendexd", desc="Send data from cache to reqeustor") {
+    peek(L1RequestL2Network_in, RequestMsg) {
+      enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+        assert(is_valid(cache_entry));
+        out_msg.Addr := address;
+        out_msg.Type := CoherenceResponseType:DATA_EXCLUSIVE;
+        out_msg.Sender := machineID;
+        out_msg.Destination.add(in_msg.Requestor);
+        out_msg.DataBlk := cache_entry.DataBlk;
+        out_msg.MessageSize := MessageSizeType:Response_Data;
+        if( checkEqual(in_msg.ver_number,cache_entry.ver_number) )
+        {}
+        else
+        {
+            out_msg.self_invalidate_flag := true;
+            updateSharerCount(cache_entry);
+            //ver number mismatch
+        }
+        out_msg.ver_number := cache_entry.ver_number;
+        //dsi error update sharer count
+        out_msg.AckCount := 0 - cache_entry.Sharers.count();
+        if (cache_entry.Sharers.isElement(in_msg.Requestor)) {
+          out_msg.AckCount := out_msg.AckCount + 1;
+        }
+      }
+    }
+  }
+
   action(ds_sendSharedDataToRequestor, "ds", desc="Send data from cache to reqeustor") {
     peek(L1RequestL2Network_in, RequestMsg) {
       enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
@@ -504,6 +676,30 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
     }
   }
 
+  action(dsi_sendSharedDataToRequestor, "dsi_ssdr", desc="Send data from cache to reqeustor when req has tag match") {
+    peek(L1RequestL2Network_in, RequestMsg) {
+      enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+        assert(is_valid(cache_entry));
+        out_msg.Addr := address;
+        out_msg.Type := CoherenceResponseType:DATA;
+        out_msg.Sender := machineID;
+        if( checkEqual(in_msg.ver_number,cache_entry.ver_number) )
+        {}
+        else
+        {
+            out_msg.self_invalidate_flag := true;
+            updateSharerCount(cache_entry);
+            //ver number mismatch
+        }
+        out_msg.ver_number := cache_entry.ver_number;
+        //dsi error update sharer count
+        out_msg.Destination.add(in_msg.Requestor);
+        out_msg.DataBlk := cache_entry.DataBlk;
+        out_msg.MessageSize := MessageSizeType:Response_Data;
+        out_msg.AckCount := 0;
+      }
+    }
+  }
   action(e_sendDataToGetSRequestors, "e", desc="Send data from cache to all GetS IDs") {
     assert(is_valid(tbe));
     assert(tbe.L1_GetS_IDs.count() > 0);
@@ -732,6 +928,15 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
     }
   }
 
+  action(dsi_checkUnblock, "dsi_cu", desc="Add L1 sharer to list") {
+    peek(L1unblockNetwork_in, ResponseMsg) {
+      assert(is_valid(cache_entry));
+      if( checkEqual(in_msg.ver_number, cache_entry.ver_number) )
+      {
+        cache_entry.sharer_count_ver := cache_entry.sharer_count_ver+1;
+      }
+    }
+  }
   action(kk_removeRequestSharer, "\k", desc="Remove L1 Request sharer from list") {
     peek(L1RequestL2Network_in, RequestMsg) {
       assert(is_valid(cache_entry));
@@ -896,8 +1101,25 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
   }
 
 
+  transition(SS, L1_GETS_VN) {
+    dsi_sendSharedDataToRequestor;
+    nn_addSharer;
+    set_setMRU;
+    uu_profileHit;
+    jj_popL1RequestQueue;
+  }
+
   transition(SS, L1_GETX, SS_MB) {
     d_sendDataToRequestor;
+    // fw_sendFwdInvToSharers;
+    fwm_sendFwdInvToSharersMinusRequestor;
+    set_setMRU;
+    uu_profileHit;
+    jj_popL1RequestQueue;
+  }
+
+  transition(SS, L1_GETX_VN, SS_MB) {
+    dsi_sendDataToRequestorOnRead;
     // fw_sendFwdInvToSharers;
     fwm_sendFwdInvToSharersMinusRequestor;
     set_setMRU;
@@ -925,9 +1147,16 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
     rr_deallocateL2CacheBlock;
   }
 
-
+//dsr dsi
   transition(M, L1_GETX, MT_MB) {
     d_sendDataToRequestor;
+    set_setMRU;
+    uu_profileHit;
+    jj_popL1RequestQueue;
+  }
+
+  transition(M, L1_GETX_VN, MT_MB) {
+    dsi_sendDataToRequestor;
     set_setMRU;
     uu_profileHit;
     jj_popL1RequestQueue;
@@ -943,6 +1172,13 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(M, L1_GETS, MT_MB) {
     dd_sendExclusiveDataToRequestor;
+    set_setMRU;
+    uu_profileHit;
+    jj_popL1RequestQueue;
+  }
+
+  transition(M, L1_GETS_VN, MT_MB) {
+    dsi_sendExclusiveDataToRequestor;
     set_setMRU;
     uu_profileHit;
     jj_popL1RequestQueue;
@@ -971,8 +1207,22 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
   }
 
 
+  transition(MT, L1_GETX_VN, MT_MB) {
+    dsi_forwardRequestToExclusive;
+    uu_profileMiss;
+    set_setMRU;
+    jj_popL1RequestQueue;
+  }
+
   transition(MT, {L1_GETS, L1_GET_INSTR}, MT_IIB) {
     b_forwardRequestToExclusive;
+    uu_profileMiss;
+    set_setMRU;
+    jj_popL1RequestQueue;
+  }
+
+  transition(MT, L1_GETS_VN, MT_IIB) {
+    dsi_forwardRequestToExclusiveOnGets;
     uu_profileMiss;
     set_setMRU;
     jj_popL1RequestQueue;
@@ -1009,6 +1259,7 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
   }
 
   transition(MT_IIB, Unblock, MT_IB) {
+    dsi_checkUnblock;
     nnu_addSharerFromUnblock;
     k_popUnblockQueue;
   }
@@ -1025,7 +1276,7 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
   }
 
   transition(MT_SB, Unblock, SS) {
-    nnu_addSharerFromUnblock;
+    nnu_addSharerFromUnblock;//dsi error
     k_popUnblockQueue;
     kd_wakeUpDependents;
   }

@@ -55,7 +55,10 @@ machine(L1Cache, "MI Example L1 Cache")
 
     IS, AccessPermission:Busy, desc="Issued request for LOAD/IFETCH";
     IM, AccessPermission:Busy, desc="Issued request for STORE/ATOMIC";
-  }
+    S, AccessPermission:Read_Only, desc="Shared";
+    SM, AccessPermission:Busy, desc="Issued request to write on a shared block";
+    MS, AccessPermission:Busy, desc="Issued request to read when other block is M";
+ }
 
   // EVENTS
   enumeration(Event, desc="Cache events") {
@@ -64,12 +67,13 @@ machine(L1Cache, "MI Example L1 Cache")
     Load,       desc="Load request from processor";
     Ifetch,     desc="Ifetch request from processor";
     Store,      desc="Store request from processor";
+    
 
-    Data,       desc="Data from network";
+    Data,            desc="Data from network";
     Fwd_GETX,        desc="Forward from network";
     Fwd_GETS,   desc="Forward GETS from network";
     Inv,        desc="Invalidate request from dir";
-
+   
     Replacement,  desc="Replace a block";
     Writeback_Ack,   desc="Ack from the directory for a writeback";
     Writeback_Nack,   desc="Nack from the directory for a writeback";
@@ -193,12 +197,13 @@ machine(L1Cache, "MI Example L1 Cache")
     num_functional_writes := num_functional_writes +
         testAndWrite(addr, getCacheEntry(addr).DataBlk, pkt);
     return num_functional_writes;
-  }
+   }
 
   // NETWORK PORTS
 
   out_port(requestNetwork_out, RequestMsg, requestFromCache);
   out_port(responseNetwork_out, ResponseMsg, responseFromCache);
+  
 
   in_port(forwardRequestNetwork_in, RequestMsg, forwardToCache) {
     if (forwardRequestNetwork_in.isReady()) {
@@ -219,6 +224,9 @@ machine(L1Cache, "MI Example L1 Cache")
         else if (in_msg.Type == CoherenceRequestType:INV) {
           trigger(Event:Inv, in_msg.Addr, cache_entry, tbe);
         }
+        else if (in_msg.Type == CoherenceRequestType:GETS){
+          trigger(Event:Fwd_GETS, in_msg.Addr, cache_entry, tbe);
+	}
         else {
           error("Unexpected message");
         }
@@ -265,7 +273,22 @@ machine(L1Cache, "MI Example L1 Cache")
   }
 
   // ACTIONS
+//666
 
+  
+
+  action(ilr_issueLoadRequest, "ilr", desc="Issue a Load request") {
+    enqueue(requestNetwork_out, RequestMsg, issue_latency) {
+    out_msg.Addr := address;
+      out_msg.Type := CoherenceRequestType:GETS;
+      out_msg.Requestor := machineID;
+      out_msg.Destination.add(map_Address_to_Directory(address));
+      out_msg.MessageSize := MessageSizeType:Control;
+    }
+  }
+
+
+//666
   action(a_issueRequest, "a", desc="Issue a request") {
     enqueue(requestNetwork_out, RequestMsg, issue_latency) {
     out_msg.Addr := address;
@@ -276,11 +299,44 @@ machine(L1Cache, "MI Example L1 Cache")
     }
   }
 
+  action(getsm_issueGETMSRequest, "getsm", desc="Issue a request") {
+    enqueue(requestNetwork_out, RequestMsg, issue_latency) {
+    out_msg.Addr := address;
+      out_msg.Type := CoherenceRequestType:GETX_SM;
+      out_msg.Requestor := machineID;
+      out_msg.Destination.add(map_Address_to_Directory(address));
+      out_msg.MessageSize := MessageSizeType:Control;
+    }
+  }
+
+  action(inv_Ack, "iac", desc="Ack the inv") {
+  enqueue(responseNetwork_out, ResponseMsg, cache_response_latency) {
+      assert(is_valid(cache_entry));
+      out_msg.Addr := address;
+      out_msg.Type := CoherenceResponseType:ACK;
+      //out_msg.Requestor := machineID;
+      out_msg.Requestor := machineID;
+      out_msg.Destination.add(map_Address_to_Directory(address));
+      out_msg.MessageSize := MessageSizeType:Response_Control;
+    }
+  }
+
   action(b_issuePUT, "b", desc="Issue a PUT request") {
     enqueue(requestNetwork_out, RequestMsg, issue_latency) {
       assert(is_valid(cache_entry));
       out_msg.Addr := address;
       out_msg.Type := CoherenceRequestType:PUTX;
+      out_msg.Requestor := machineID;
+      out_msg.Destination.add(map_Address_to_Directory(address));
+      out_msg.DataBlk := cache_entry.DataBlk;
+      out_msg.MessageSize := MessageSizeType:Data;
+    }
+  }
+  action(msi_issuePUT, "msi", desc="Issue a PUT request") {
+    enqueue(requestNetwork_out, RequestMsg, issue_latency) {
+      assert(is_valid(cache_entry));
+      out_msg.Addr := address;
+      out_msg.Type := CoherenceRequestType:PUTS;
       out_msg.Requestor := machineID;
       out_msg.Destination.add(map_Address_to_Directory(address));
       out_msg.DataBlk := cache_entry.DataBlk;
@@ -416,7 +472,7 @@ machine(L1Cache, "MI Example L1 Cache")
 
   // TRANSITIONS
 
-  transition({IS, IM, MI, II, MII}, {Load, Ifetch, Store, Replacement}) {
+  transition({IS, IM, MI, II, MII, MS, SM}, {Load, Ifetch, Store, Replacement}) {
     z_stall;
   }
 //bullshit
@@ -440,6 +496,12 @@ machine(L1Cache, "MI Example L1 Cache")
     m_popMandatoryQueue;
   }
 
+  transition(S, {Load, Ifetch}) {
+    r_load_hit;
+    p_profileHit;
+    m_popMandatoryQueue;
+  }
+
   transition(I, Inv) {
     o_popForwardedRequestQueue;
   }
@@ -449,18 +511,17 @@ machine(L1Cache, "MI Example L1 Cache")
     i_allocateL1CacheBlock;
     a_issueRequest;
     p_profileMiss;
-    m_popMandatoryQueue;
   }
 
   transition(I, {Load, Ifetch}, IS) {
     v_allocateTBE;
     i_allocateL1CacheBlock;
-    a_issueRequest;
+    ilr_issueLoadRequest;
     p_profileMiss;
     m_popMandatoryQueue;
   }
 
-  transition(IS, Data, M) {
+  transition(IS, Data, S) {
     u_writeDataToCache;
     rx_load_hit;
     w_deallocateTBE;
@@ -488,15 +549,66 @@ machine(L1Cache, "MI Example L1 Cache")
      v_allocateTBE;
      b_issuePUT;
      x_copyDataFromCacheToTBE;
+     inv_Ack;
      forward_eviction_to_cpu;
      h_deallocateL1CacheBlock;
   }
+//S > M
+  transition(S,Store,SM)
+  {
+    getsm_issueGETMSRequest; 
+  }
 
+  transition(SM, Inv, I)
+  {
+    forward_eviction_to_cpu;
+    inv_Ack;
+    o_popForwardedRequestQueue;
+  }
+
+  transition(SM,Data,M)
+  {
+    //drop data
+    sx_store_hit;
+    n_popResponseQueue;
+  }
+//S->I
+  transition(S, Replacement, I)
+  {
+    msi_issuePUT;
+    forward_eviction_to_cpu;
+    h_deallocateL1CacheBlock;
+    //PUTX
+    
+  }
+  transition(S, Inv , I)
+  {
+    //deallocate block, send ack
+     h_deallocateL1CacheBlock;
+     inv_Ack;
+     forward_eviction_to_cpu;
+  }
+
+//M->S
+  transition(M, Fwd_GETS, MS)
+  {
+      v_allocateTBE;
+      e_sendData;
+      x_copyDataFromCacheToTBE;
+      b_issuePUT;
+      o_popForwardedRequestQueue;
+  }
+  
+  transition(MS, Writeback_Ack, S)
+  {
+      w_deallocateTBE;
+      o_popForwardedRequestQueue;   
+  }
   transition(MI, Writeback_Ack, I) {
     w_deallocateTBE;
     o_popForwardedRequestQueue;
   }
-
+ 
   transition(MI, Fwd_GETX, II) {
     ee_sendDataFromTBE;
     o_popForwardedRequestQueue;
@@ -506,7 +618,7 @@ machine(L1Cache, "MI Example L1 Cache")
     o_popForwardedRequestQueue;
   }
 
-  transition(MII, Fwd_GETX, I) {
+  transition(MII, {Fwd_GETX, Fwd_GETS}, I) {
     ee_sendDataFromTBE;
     w_deallocateTBE;
     o_popForwardedRequestQueue;

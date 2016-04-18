@@ -127,6 +127,12 @@ structure(RubyRequest, desc="...", interface="Message", external="yes") {
 
 structure(AbstractEntry, primitive="yes", external = "yes") {
   void changePermission(AccessPermission);
+  void incrementVerNumber();
+  void clearVerNumber();
+  void set_selfinvalidatebit();
+  void clear_selfinvalidatebit();
+  void incrementSharerCount();
+  void clearSharerCount();
 }
 
 structure (DirectoryMemory, external = "yes") {
@@ -139,6 +145,10 @@ structure (DirectoryMemory, external = "yes") {
 
 structure(AbstractCacheEntry, primitive="yes", external = "yes") {
   void changePermission(AccessPermission);
+  void incrementVerNumber();
+  void clearVerNumber();
+  void set_selfinvalidatebit();
+  void clear_selfinvalidatebit();
 }
 
 structure (CacheMemory, external = "yes") {
@@ -152,7 +162,12 @@ structure (CacheMemory, external = "yes") {
   void setMRU(Address);
   void recordRequestType(CacheRequestType);
   bool checkResourceAvailable(CacheResourceType, Address);
-
+  bool addToFifo(Address addr);//dsr dsi eviction under this
+  void findAndDeleteFifoEntry(Address addr);
+  Address getSelfInvalidateBlock();
+  void clearSelfInvalidateBlock();
+  void setSelfInvaludateBlock(Address addr);
+  //dsr dsi
   Scalar demand_misses;
   Scalar demand_hits;
 }

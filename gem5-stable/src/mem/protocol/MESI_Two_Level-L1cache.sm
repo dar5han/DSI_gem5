@@ -105,6 +105,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     // other requests
     Fwd_GETX,   desc="GETX from other processor";
     Fwd_GETS,   desc="GETS from other processor";
+    Fwd_GETS_SI,  desc="GETS with self invalidate bit set from the other processor";
     Fwd_GET_INSTR,   desc="GET_INSTR from other processor";
 
     Data,       desc="Data for processor";
@@ -120,7 +121,8 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     PF_Load,    desc="load request from prefetcher";
     PF_Ifetch,  desc="instruction fetch request from prefetcher";
     PF_Store,   desc="exclusive load request from prefetcher";
-  }
+    L1_MSelfInv, desc="Self Invalidation of a block that was in M";//dsr
+}
 
   // TYPES
 
@@ -130,6 +132,8 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     DataBlock DataBlk,       desc="data for the block";
     bool Dirty, default="false",   desc="data is dirty";
     bool isPrefetch, desc="Set if this block was prefetched";
+    bool self_invalidate_flag, desc="set if SI block";//dsr dsi
+    int ver_number, desc="ver number";
   }
 
   // TBE fields
@@ -283,11 +287,32 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     return tbe.pendingAcks;
   }
 
+  MessageBuffer triggerQueue, ordered="true";
+  
   out_port(requestL1Network_out, RequestMsg, requestFromL1Cache);
   out_port(responseL1Network_out, ResponseMsg, responseFromL1Cache);
   out_port(unblockNetwork_out, ResponseMsg, unblockFromL1Cache);
   out_port(optionalQueue_out, RubyRequest, optionalQueue);
+//dsr dsi
+  out_port(triggerQueue_out, TriggerMsg, triggerQueue);
 
+  // Trigger Queue
+  in_port(triggerQueue_in, TriggerMsg, triggerQueue) {
+    if (triggerQueue_in.isReady()) {
+      peek(triggerQueue_in, TriggerMsg) {
+        if (in_msg.Type == TriggerType:L1_MSelfInv) {
+              Entry L1Dcache_entry := getL1DCacheEntry(in_msg.Addr);
+              trigger(Event:L1_MSelfInv,
+                      in_msg.Addr,
+                      L1Dcache_entry,
+                      TBEs[in_msg.Addr]);
+        } else {
+              error("Unexpected message");
+        }
+      }
+    }
+  }
+  // ** IN_PORTS **
 
   // Prefetch queue between the controller and the prefetcher
   // As per Spracklen et al. (HPCA 2005), the prefetch queue should be
@@ -427,6 +452,8 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
           trigger(Event:Fwd_GETX, in_msg.Addr, cache_entry, tbe);
         } else if (in_msg.Type == CoherenceRequestType:GETS) {
           trigger(Event:Fwd_GETS, in_msg.Addr, cache_entry, tbe);
+        } else if (in_msg.Type == CoherenceRequestType:GETS_VN) {
+          trigger(Event:Fwd_GETS_SI, in_msg.Addr, cache_entry, tbe);//dsr dsi
         } else if (in_msg.Type == CoherenceRequestType:GET_INSTR) {
           trigger(Event:Fwd_GET_INSTR, in_msg.Addr, cache_entry, tbe);
         } else {
@@ -521,7 +548,19 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     peek(mandatoryQueue_in, RubyRequest) {
       enqueue(requestL1Network_out, RequestMsg, l1_request_latency) {
         out_msg.Addr := address;
-        out_msg.Type := CoherenceRequestType:GETS;
+        if(L1Dcache.isTagPresent(address) )
+        {
+
+            out_msg.Type := CoherenceRequestType:GETS_VN;
+            assert(is_valid(cache_entry));
+            out_msg.ver_number := cache_entry.ver_number;
+            DPRINTF(RubySlicc, "DSI GETS_VN address: %s, destination: %s\n",
+                address, out_msg.Destination);
+        }
+        else
+        {
+            out_msg.Type := CoherenceRequestType:GETS;
+        }
         out_msg.Requestor := machineID;
         out_msg.Destination.add(mapAddressToRange(address, MachineType:L2Cache,
                           l2_select_low_bit, l2_select_num_bits, intToID(0)));
@@ -592,7 +631,19 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     peek(mandatoryQueue_in, RubyRequest) {
       enqueue(requestL1Network_out, RequestMsg, l1_request_latency) {
         out_msg.Addr := address;
-        out_msg.Type := CoherenceRequestType:GETX;
+        //dsr dsi
+        if( L1Dcache.isTagPresent(address) )
+        {
+            DPRINTF(RubySlicc, "DSI sent GETX_VN address: %s, destination: %s\n",
+                address, out_msg.Destination);
+            out_msg.Type := CoherenceRequestType:GETX_VN;
+            assert(is_valid(cache_entry));
+            out_msg.ver_number := cache_entry.ver_number;
+        }
+        else
+        {
+            out_msg.Type := CoherenceRequestType:GETX;
+        }
         out_msg.Requestor := machineID;
         DPRINTF(RubySlicc, "%s\n", machineID);
         out_msg.Destination.add(mapAddressToRange(address, MachineType:L2Cache,
@@ -658,6 +709,23 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     }
   }
 
+  action(dsi_sendDataToRequestorWithSI, "dsi_fwdgets", desc="send data to requestor with SI ") {
+    peek(requestL1Network_in, RequestMsg) {
+      enqueue(responseL1Network_out, ResponseMsg, l1_response_latency) {
+        assert(is_valid(cache_entry));
+        out_msg.Addr := address;
+        out_msg.Type := CoherenceResponseType:DATA;
+        out_msg.DataBlk := cache_entry.DataBlk;
+        out_msg.Dirty := cache_entry.Dirty;
+        out_msg.Sender := machineID;
+        out_msg.Destination.add(in_msg.Requestor);
+        out_msg.MessageSize := MessageSizeType:Response_Data;
+        out_msg.self_invalidate_flag := true;
+        out_msg.ver_number := in_msg.ver_number;
+        DPRINTF(RubySlicc, "dsi_sendDataToRequestorwithSI with ver %d SI %d and address %s",out_msg.ver_number,out_msg.self_invalidate_flag,address);
+      }
+    }
+  }
   action(d2_sendDataToL2, "d2", desc="send data to the L2 cache because of M downgrade") {
     enqueue(responseL1Network_out, ResponseMsg, l1_response_latency) {
       assert(is_valid(cache_entry));
@@ -687,6 +755,23 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     }
   }
 
+  action(dsi_sendDataToRequestor_fromTBEwithSI, "dsi_fromtbe", desc="send data to requestor from tbe") {
+    peek(requestL1Network_in, RequestMsg) {
+      enqueue(responseL1Network_out, ResponseMsg, l1_response_latency) {
+        assert(is_valid(tbe));
+        out_msg.Addr := address;
+        out_msg.Type := CoherenceResponseType:DATA;
+        out_msg.DataBlk := tbe.DataBlk;
+        out_msg.Dirty := tbe.Dirty;
+        out_msg.Sender := machineID;
+        out_msg.Destination.add(in_msg.Requestor);
+        out_msg.MessageSize := MessageSizeType:Response_Data;
+        out_msg.self_invalidate_flag := true;
+        out_msg.ver_number := in_msg.ver_number;
+        DPRINTF(RubySlicc, "dsi_sendDataToRequestor_fromTBEwithSI with ver %d SI %d and address %s",out_msg.ver_number,out_msg.self_invalidate_flag,address);
+      }
+    }
+  }
   action(d2t_sendDataToL2_fromTBE, "d2t", desc="send data to the L2 cache") {
     enqueue(responseL1Network_out, ResponseMsg, l1_response_latency) {
       assert(is_valid(tbe));
@@ -753,7 +838,13 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
       }
     }
   }
+//dsr dsi
 
+  action(dsi_findanddeletefifoentry, "dsi", desc="finds and deletes the entry in FIFO if present") {
+        L1Dcache.findAndDeleteFifoEntry(address);
+  }
+
+//dsr dsi end
   action(forward_eviction_to_cpu, "\cc", desc="sends eviction information to the processor") {
     if (send_evictions) {
       DPRINTF(RubySlicc, "Sending invalidation for %s to the CPU\n", address);
@@ -787,6 +878,8 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
       out_msg.Destination.add(mapAddressToRange(address, MachineType:L2Cache,
                           l2_select_low_bit, l2_select_num_bits, intToID(0)));
       out_msg.MessageSize := MessageSizeType:Response_Control;
+      //dsr dsi
+      out_msg.ver_number := cache_entry.ver_number;
       DPRINTF(RubySlicc, "%s\n", address);
     }
   }
@@ -877,6 +970,22 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
       assert(is_valid(cache_entry));
       cache_entry.DataBlk := in_msg.DataBlk;
       cache_entry.Dirty := in_msg.Dirty;
+      cache_entry.self_invalidate_flag := in_msg.self_invalidate_flag;
+      cache_entry.ver_number := in_msg.ver_number;
+      if(cache_entry.self_invalidate_flag)
+      {
+          if(L1Dcache.addToFifo(address) != true)
+          {
+              //spill from FIFO
+              //sequencer.evictionCallback(L1Dcache.getSelfInvalidateBlock());
+              enqueue(triggerQueue_out,TriggerMsg){
+                  out_msg.Addr := L1Dcache.getSelfInvalidateBlock();
+                  out_msg.Type := TriggerType:L1_MSelfInv;
+                  }
+              //evicted from cache also
+          }   //dsr dsi
+      }
+
     }
   }
 
@@ -1038,7 +1147,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     ppm_observePfMiss;
     k_popMandatoryQueue;
   }
-
+//dsr dsi done
   transition({NP,I}, Store, IM) {
     oo_allocateL1DCacheBlock;
     i_allocateTBE;
@@ -1093,11 +1202,13 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   transition(S, L1_Replacement, I) {
+    dsi_findanddeletefifoentry;
     forward_eviction_to_cpu;
     ff_deallocateL1CacheBlock;
   }
 
   transition(S, Inv, I) {
+    dsi_findanddeletefifoentry;
     forward_eviction_to_cpu;
     fi_sendInvAck;
     l_popRequestQueue;
@@ -1139,8 +1250,9 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   // Transitions from Modified
-
+//dsr dsi
   transition(M, L1_Replacement, M_I) {
+    dsi_findanddeletefifoentry;
     forward_eviction_to_cpu;
     i_allocateTBE;
     g_issuePUTX;   // send data, but hold in case forwarded request
@@ -1152,26 +1264,41 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     o_popIncomingResponseQueue;
     kd_wakeUpDependents;
   }
-
+//dsr dsi
   transition(M, Inv, I) {
+    dsi_findanddeletefifoentry;
     forward_eviction_to_cpu;
     f_sendDataToL2;
     l_popRequestQueue;
   }
 
   transition(M_I, Inv, SINK_WB_ACK) {
+    dsi_findanddeletefifoentry;
     ft_sendDataToL2_fromTBE;
     l_popRequestQueue;
   }
-
+//dsr dsi
   transition(M, Fwd_GETX, I) {
+    dsi_findanddeletefifoentry;
     forward_eviction_to_cpu;
     d_sendDataToRequestor;
     l_popRequestQueue;
   }
 
+  transition(M, L1_MSelfInv, M_I) {
+    forward_eviction_to_cpu;
+    fi_sendInvAck;
+    l_popRequestQueue;
+  }
+
   transition(M, {Fwd_GETS, Fwd_GET_INSTR}, S) {
     d_sendDataToRequestor;
+    d2_sendDataToL2;
+    l_popRequestQueue;
+  }
+
+  transition(M, Fwd_GETS_SI, S) {
+    dsi_sendDataToRequestorWithSI;
     d2_sendDataToL2;
     l_popRequestQueue;
   }
@@ -1187,8 +1314,15 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     l_popRequestQueue;
   }
 
+  transition(M_I, Fwd_GETS_SI, SINK_WB_ACK) {
+    dsi_sendDataToRequestor_fromTBEwithSI;
+    d2t_sendDataToL2_fromTBE;
+    l_popRequestQueue;
+  }
+
   // Transitions from IS
   transition({IS, IS_I}, Inv, IS_I) {
+    dsi_findanddeletefifoentry;
     fi_sendInvAck;
     l_popRequestQueue;
   }
@@ -1298,7 +1432,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     kd_wakeUpDependents;
   }
 
-  // Transitions from IM
+  // Transitions from IM dsi error
   transition(IM, Inv, IM) {
     fi_sendInvAck;
     l_popRequestQueue;
@@ -1339,7 +1473,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     kd_wakeUpDependents;
   }
 
-  // transitions from SM
+  // transitions from SM dsi error
   transition(SM, Inv, IM) {
     forward_eviction_to_cpu;
     fi_sendInvAck;

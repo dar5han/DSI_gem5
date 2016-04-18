@@ -41,6 +41,8 @@ enumeration(CoherenceRequestType, desc="...") {
 
   DMA_READ, desc="DMA Read";
   DMA_WRITE, desc="DMA Write";
+  GETX_VN,  desc="Get eXclusive when tag matches";//dsr dsi
+  GETS_VN,  desc="Get Shared when tag matches";//dsr dsi
 }
 
 // CoherenceResponseType
@@ -56,6 +58,28 @@ enumeration(CoherenceResponseType, desc="...") {
   INV, desc="Invalidate from directory";
 }
 
+// TriggerType
+enumeration(TriggerType, desc="...") {
+  L1_MSelfInv,            desc="See corresponding event";
+}
+
+
+// TriggerMsg
+structure(TriggerMsg, desc="...", interface="Message") {
+  Address Addr,             desc="Physical address for this request";
+  TriggerType Type,            desc="Type of trigger";
+  
+  bool functionalRead(Packet *pkt) {
+    // Trigger message does not hold data
+    return false;
+  }
+
+  bool functionalWrite(Packet *pkt) {
+    // Trigger message does not hold data
+    return false;
+  }
+}
+
 // RequestMsg
 structure(RequestMsg, desc="...", interface="NetworkMessage") {
   Address Addr,              desc="Physical address for this request";
@@ -68,6 +92,8 @@ structure(RequestMsg, desc="...", interface="NetworkMessage") {
   int Len;
   bool Dirty, default="false",  desc="Dirty bit";
   PrefetchBit Prefetch,         desc="Is this a prefetch request";
+  int ver_number,               desc="vernumber from directory";
+  bool self_invalidate_flag,    desc="Self invalidate block";
 
   bool functionalRead(Packet *pkt) {
     // Only PUTX messages contains the data block
@@ -95,6 +121,8 @@ structure(ResponseMsg, desc="...", interface="NetworkMessage") {
   bool Dirty, default="false",  desc="Dirty bit";
   int AckCount, default="0",  desc="number of acks in this message";
   MessageSizeType MessageSize,  desc="size category of the message";
+  bool self_invalidate_flag, default="false",    desc="self invalidate bit";//dsr dsi
+  int ver_number,               desc="version number from L2/directory";
 
   bool functionalRead(Packet *pkt) {
     // Valid data block is only present in message with following types
