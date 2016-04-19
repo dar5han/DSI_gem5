@@ -159,6 +159,7 @@ structure (CacheMemory, external = "yes") {
   void deallocate(Address);
   AbstractCacheEntry lookup(Address);
   bool isTagPresent(Address);
+  bool isTagPresentIgnorePermissions(Address);
   void setMRU(Address);
   void recordRequestType(CacheRequestType);
   bool checkResourceAvailable(CacheResourceType, Address);

@@ -105,7 +105,17 @@ system.voltage_domain = VoltageDomain(voltage = options.sys_voltage)
 system.clk_domain = SrcClockDomain(clock = options.sys_clock,
                                    voltage_domain = system.voltage_domain)
 
+# When ruby creates the system, it depends on the clk_domain entry of each of the cpus
+cpu = []
+for i in  xrange(options.num_cpus):
+    cpu.append(ClockedObject(clk_domain=system.clk_domain))
+system.cpu = cpu
+
 Ruby.create_system(options, False, system)
+
+# to avoid a warning, clear the tester's parent and return to the previous state
+tester.clear_parent(tester.get_parent())
+system.cpu = tester
 
 # Create a seperate clock domain for Ruby
 system.ruby.clk_domain = SrcClockDomain(clock = options.ruby_clock,
@@ -153,3 +163,4 @@ m5.instantiate()
 exit_event = m5.simulate(options.abs_max_tick)
 
 print 'Exiting @ tick', m5.curTick(), 'because', exit_event.getCause()
+

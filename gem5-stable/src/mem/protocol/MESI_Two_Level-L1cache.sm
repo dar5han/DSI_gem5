@@ -90,6 +90,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     PF_IS_I, AccessPermission:Busy, desc="Issued GETs, saw inv before data";
   }
 
+
   // EVENTS
   enumeration(Event, desc="Cache events") {
     // L1 events
@@ -134,6 +135,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     bool isPrefetch, desc="Set if this block was prefetched";
     bool self_invalidate_flag, desc="set if SI block";//dsr dsi
     int ver_number, desc="ver number";
+    bool tag_present, default="false", desc="tag present or not";
   }
 
   // TBE fields
@@ -158,6 +160,8 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   MessageBuffer mandatoryQueue, ordered="false";
 
   int l2_select_low_bit, default="RubySystem::getBlockSizeBits()";
+
+  bool tag_present_flag, default="false";
 
   void set_cache_entry(AbstractCacheEntry a);
   void unset_cache_entry();
@@ -543,12 +547,24 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
       }
   }
 
+  bool checkEqual(bool a, bool b)
+  {
+      if( a == b)
+      {
+          return true;
+      }
+      else
+      {
+          return false;
+      }
+    }
+
   // ACTIONS
   action(a_issueGETS, "a", desc="Issue GETS") {
     peek(mandatoryQueue_in, RubyRequest) {
       enqueue(requestL1Network_out, RequestMsg, l1_request_latency) {
         out_msg.Addr := address;
-        if(L1Dcache.isTagPresent(address) )
+        if( checkEqual(cache_entry.tag_present,true) )
         {
 
             out_msg.Type := CoherenceRequestType:GETS_VN;
@@ -632,7 +648,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
       enqueue(requestL1Network_out, RequestMsg, l1_request_latency) {
         out_msg.Addr := address;
         //dsr dsi
-        if( L1Dcache.isTagPresent(address) )
+        if( checkEqual(cache_entry.tag_present,true) )
         {
             DPRINTF(RubySlicc, "DSI sent GETX_VN address: %s, destination: %s\n",
                 address, out_msg.Destination);
@@ -1009,8 +1025,15 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   action(oo_allocateL1DCacheBlock, "\o", desc="Set L1 D-cache tag equal to tag of block B.") {
-    if (is_invalid(cache_entry)) {
+    DPRINTF(RubySlicc, "DSI is invalid=%d isTagPresent=%d\n",is_valid(cache_entry),L1Dcache.isTagPresentIgnorePermissions(address));
+    if((is_valid(cache_entry) == false) && L1Dcache.isTagPresentIgnorePermissions(address))
+    {
+        tag_present_flag := true;
+        DPRINTF(RubySlicc, "DSI set tag present but invalid\n");
+    }
+    if (is_invalid(cache_entry)) {       
       set_cache_entry(L1Dcache.allocate(address, new Entry));
+      cache_entry.tag_present := tag_present_flag;
     }
   }
 

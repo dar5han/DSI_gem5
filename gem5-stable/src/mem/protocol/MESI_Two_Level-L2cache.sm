@@ -447,7 +447,10 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
         out_msg.Addr := address;
         out_msg.Type := in_msg.Type;
         out_msg.Requestor := in_msg.Requestor;
+        cache_entry.ver_number := cache_entry.ver_number+1;//dsi error
+        //out_msg.ver_number := cache_entry.ver_number;
         out_msg.Destination.add(cache_entry.Exclusive);
+        DPRINTF(RubySlicc, "DSI got GETX incremented ver num to %d", cache_entry.ver_number);
         out_msg.MessageSize := MessageSizeType:Request_Control;
       }
     }
@@ -542,8 +545,10 @@ machine(L2Cache, "MESI Directory L2 Cache CMP")
         out_msg.Destination.add(in_msg.Requestor);
         out_msg.DataBlk := cache_entry.DataBlk;
         out_msg.MessageSize := MessageSizeType:Response_Data;
-//dsr dsi
-        out_msg.ver_number := 0;
+        //dsr dsi
+        cache_entry.ver_number := cache_entry.ver_number+1;
+        out_msg.ver_number := cache_entry.ver_number;
+        DPRINTF(RubySlicc, "DSI got GETX sent ver num %d", out_msg.ver_number);
         out_msg.AckCount := 0 - cache_entry.Sharers.count();
         if (cache_entry.Sharers.isElement(in_msg.Requestor)) {
           out_msg.AckCount := out_msg.AckCount + 1;

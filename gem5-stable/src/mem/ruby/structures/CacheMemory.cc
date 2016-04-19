@@ -191,6 +191,25 @@ CacheMemory::testCacheAccess(const Address& address, RubyRequestType type,
     return false;
 }
 
+//dsr dsi
+
+bool
+CacheMemory::isTagPresentIgnorePermissions(const Address& address) const
+{
+    assert(address == line_address(address));
+    int64 cacheSet = addressToCacheSet(address);
+    int loc = findTagInSetIgnorePermissions(cacheSet, address);
+
+    if (loc == -1) {
+        // We didn't find the tag
+        DPRINTF(RubyCache, "No tag match for address: %s\n", address);
+        return false;
+    }
+    DPRINTF(RubyCache, "address: %s found\n", address);
+    return true;
+}
+//dsr dsi end
+
 // tests to see if an address is present in the cache
 bool
 CacheMemory::isTagPresent(const Address& address) const
