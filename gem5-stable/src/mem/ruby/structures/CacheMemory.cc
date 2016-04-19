@@ -210,7 +210,53 @@ CacheMemory::isTagPresentIgnorePermissions(const Address& address) const
 }
 //dsr dsi end
 
+void
+CacheMemory::addToTagStatusMap(const Address& addr,bool status)
+{
+    assert(addr == line_address(addr));
+    tagStatusMap.insert(std::pair<Address, bool>(addr,status));
+}
 // tests to see if an address is present in the cache
+void
+CacheMemory::removeFromTagStatusMap(const Address& addr)
+{
+
+    assert(addr == line_address(addr));
+    std::map<Address, bool>::iterator it = tagStatusMap.find(addr);
+    if( it != tagStatusMap.end())
+    {
+        tagStatusMap.erase(it);
+    }
+}
+
+void
+CacheMemory::updateTagStatusMap(const Address& addr,bool newstatus)
+{
+    
+    assert(addr == line_address(addr));
+    std::map<Address, bool>::iterator it = tagStatusMap.find(addr);
+    if( it != tagStatusMap.end())
+    {
+       it->second = newstatus;  
+    }
+
+}
+
+int
+CacheMemory::getStatusFromTagStatusMap(const Address& addr)
+{
+    
+    std::map<Address, bool>::iterator it = tagStatusMap.find(addr);
+    if( it != tagStatusMap.end())
+    {
+       return it->second;  
+    }
+    else
+    {
+        return -1;
+    }
+}
+
 bool
 CacheMemory::isTagPresent(const Address& address) const
 {
@@ -226,6 +272,26 @@ CacheMemory::isTagPresent(const Address& address) const
     DPRINTF(RubyCache, "address: %s found\n", address);
     return true;
 }
+
+//dsr dsi
+bool 
+CacheMemory::isValidBlockDsi(const Address& address) const
+{
+    assert(address == line_address(address));
+    int64 cacheset = addressToCacheSet(address);
+    m5::hash_map<Address, int>::const_iterator it = m_tag_index.find(address);
+    if (it != m_tag_index.end())
+    {
+        if (m_cache[cacheset][it->second]->m_Permission == AccessPermission_Invalid)
+        {
+            return true;
+        }else{
+            return false;
+        }
+    }
+    return false;
+}
+//dsr dsi
 
 // Returns true if there is:
 //   a) a tag match on this address or there is

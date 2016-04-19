@@ -72,7 +72,7 @@ class CacheMemory : public SimObject
     //   a) a tag match on this address or there is
     //   b) an unused line in the same cache "way"
     bool cacheAvail(const Address& address) const;
-
+    bool isValidBlockDsi(const Address& address) const;
     // find an unused entry and sets the tag appropriate for the address
     AbstractCacheEntry* allocate(const Address& address, AbstractCacheEntry* new_entry);
     void allocateVoid(const Address& address, AbstractCacheEntry* new_entry)
@@ -115,6 +115,11 @@ class CacheMemory : public SimObject
     void clearSelfInvalidateBlock() { self_invalidate_block.setAddress(0); }
     void setSelfInvaludateBlock(Address addr) { self_invalidate_block = addr; }
 
+    std::map<Address,bool> tagStatusMap;
+    void addToTagStatusMap(const Address& addr,bool status);
+    void removeFromTagStatusMap(const Address& addr);
+    void updateTagStatusMap(const Address& addr, bool newstatus);
+    int getStatusFromTagStatusMap(const Address& addr);
   public:
     Stats::Scalar m_demand_hits;
     Stats::Scalar m_demand_misses;

@@ -559,6 +559,18 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
       }
     }
 
+  bool checkEqualInt(int a, int b)
+  {
+      if( a == b)
+      {
+          return true;
+      }
+      else
+      {
+          return false;
+      }
+    }
+
   // ACTIONS
   action(a_issueGETS, "a", desc="Issue GETS") {
     peek(mandatoryQueue_in, RubyRequest) {
@@ -981,6 +993,22 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
     unset_tbe();
   }
 
+  action(dsi_updateTagStatusReadWrite, "dsi_tagstatus", desc="Update Tag Status") {
+    DPRINTF(ProtocolTrace,"DSI adding %s to tagstatsumap",address);
+    L1Dcache.addToTagStatusMap(address,false);    
+  }
+
+  action(dsi_updateTagStatusInvalid, "dsi_tagInv", desc="Update Tag Status on inv") {
+    DPRINTF(ProtocolTrace,"DSI changing status of  %s",address);
+    L1Dcache.updateTagStatusMap(address,true); 
+  }
+
+  action(dsi_updateTagStatusReplacement, "dsi_tagReplace", desc="remove from tagstatus map") {
+    DPRINTF(ProtocolTrace,"DSI removing %s from tagstatsumap",address);
+    L1Dcache.removeFromTagStatusMap(address);
+    cache_entry.tag_present := false;
+  }
+
   action(u_writeDataToL1Cache, "u", desc="Write data to cache") {
     peek(responseL1Network_in, ResponseMsg) {
       assert(is_valid(cache_entry));
@@ -1025,8 +1053,8 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   action(oo_allocateL1DCacheBlock, "\o", desc="Set L1 D-cache tag equal to tag of block B.") {
-    DPRINTF(RubySlicc, "DSI is invalid=%d isTagPresent=%d\n",is_valid(cache_entry),L1Dcache.isTagPresentIgnorePermissions(address));
-    if((is_valid(cache_entry) == false) && L1Dcache.isTagPresentIgnorePermissions(address))
+    DPRINTF(RubySlicc, "DSI address tag status=%d \n",L1Dcache.getStatusFromTagStatusMap(address));
+    if(checkEqualInt(L1Dcache.getStatusFromTagStatusMap(address),1))
     {
         tag_present_flag := true;
         DPRINTF(RubySlicc, "DSI set tag present but invalid\n");
@@ -1035,6 +1063,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
       set_cache_entry(L1Dcache.allocate(address, new Entry));
       cache_entry.tag_present := tag_present_flag;
     }
+    tag_present_flag := false;
   }
 
   action(pp_allocateL1ICacheBlock, "\p", desc="Set L1 I-cache tag equal to tag of block B.") {
@@ -1111,6 +1140,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
 
   // Transitions from Idle
   transition({NP,I}, L1_Replacement) {
+    dsi_updateTagStatusReplacement;
     ff_deallocateL1CacheBlock;
   }
 
@@ -1225,12 +1255,14 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   transition(S, L1_Replacement, I) {
+    dsi_updateTagStatusReplacement;
     dsi_findanddeletefifoentry;
     forward_eviction_to_cpu;
     ff_deallocateL1CacheBlock;
   }
 
   transition(S, Inv, I) {
+    dsi_updateTagStatusInvalid;
     dsi_findanddeletefifoentry;
     forward_eviction_to_cpu;
     fi_sendInvAck;
@@ -1247,6 +1279,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
 
   transition(E, L1_Replacement, M_I) {
     // silent E replacement??
+    dsi_updateTagStatusReplacement;//dsi error
     forward_eviction_to_cpu;
     i_allocateTBE;
     g_issuePUTX;   // send data, but hold in case forwarded request
@@ -1255,12 +1288,14 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
 
   transition(E, Inv, I) {
     // don't send data
+    dsi_updateTagStatusInvalid;
     forward_eviction_to_cpu;
     fi_sendInvAck;
     l_popRequestQueue;
   }
 
   transition(E, Fwd_GETX, I) {
+    dsi_updateTagStatusInvalid;
     forward_eviction_to_cpu;
     d_sendDataToRequestor;
     l_popRequestQueue;
@@ -1275,6 +1310,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   // Transitions from Modified
 //dsr dsi
   transition(M, L1_Replacement, M_I) {
+    dsi_updateTagStatusReplacement;
     dsi_findanddeletefifoentry;
     forward_eviction_to_cpu;
     i_allocateTBE;
@@ -1283,12 +1319,14 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   transition(M_I, WB_Ack, I) {
+    dsi_updateTagStatusInvalid;
     s_deallocateTBE;
     o_popIncomingResponseQueue;
     kd_wakeUpDependents;
   }
 //dsr dsi
   transition(M, Inv, I) {
+    dsi_updateTagStatusInvalid;
     dsi_findanddeletefifoentry;
     forward_eviction_to_cpu;
     f_sendDataToL2;
@@ -1302,6 +1340,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 //dsr dsi
   transition(M, Fwd_GETX, I) {
+    dsi_updateTagStatusInvalid;
     dsi_findanddeletefifoentry;
     forward_eviction_to_cpu;
     d_sendDataToRequestor;
@@ -1356,6 +1395,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   transition(IS, Data_all_Acks, S) {
+    dsi_updateTagStatusReadWrite;
     u_writeDataToL1Cache;
     hx_load_hit;
     s_deallocateTBE;
@@ -1372,6 +1412,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   transition(IS_I, Data_all_Acks, I) {
+    dsi_updateTagStatusInvalid;
     u_writeDataToL1Cache;
     hx_load_hit;
     s_deallocateTBE;
@@ -1386,6 +1427,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   transition(IS, DataS_fromL1, S) {
+    dsi_updateTagStatusReadWrite;
     u_writeDataToL1Cache;
     j_sendUnblock;
     hx_load_hit;
@@ -1403,6 +1445,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   transition(IS_I, DataS_fromL1, I) {
+    dsi_updateTagStatusInvalid;
     u_writeDataToL1Cache;
     j_sendUnblock;
     hx_load_hit;
@@ -1420,6 +1463,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
 
   // directory is blocked when sending exclusive data
   transition(IS_I, Data_Exclusive, E) {
+    dsi_updateTagStatusReadWrite;
     u_writeDataToL1Cache;
     hx_load_hit;
     jj_sendExclusiveUnblock;
@@ -1438,6 +1482,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   transition(IS, Data_Exclusive, E) {
+    dsi_updateTagStatusReadWrite;
     u_writeDataToL1Cache;
     hx_load_hit;
     jj_sendExclusiveUnblock;
@@ -1479,6 +1524,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   transition(IM, Data_all_Acks, M) {
+    dsi_updateTagStatusReadWrite;
     u_writeDataToL1Cache;
     hhx_store_hit;
     jj_sendExclusiveUnblock;
@@ -1531,6 +1577,7 @@ machine(L1Cache, "MESI Directory L1 Cache CMP")
   }
 
   transition(SINK_WB_ACK, WB_Ack, I){
+    dsi_updateTagStatusInvalid;
     s_deallocateTBE;
     o_popIncomingResponseQueue;
     kd_wakeUpDependents;
